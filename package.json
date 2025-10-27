@@ -1,0 +1,25 @@
+{
+  "name": "telegram-socket-server",
+  "version": "1.0.0",
+  "description": "Socket.IO server for Telegram Clone",
+  "main": "index.js",
+  "type": "module",
+  "scripts": {
+    "start": "node index.js",
+    "dev": "node index.js"
+  },
+  "keywords": [
+    "socket.io",
+    "websocket",
+    "telegram",
+    "chat"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "socket.io": "^4.8.1",
+    "mongoose": "^8.9.5",
+    "dotenv": "^16.4.7",
+    "cors": "^2.8.5"
+  }
+}
