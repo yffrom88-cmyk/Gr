@@ -1,5 +1,4 @@
 // Standalone Socket.IO Server for Telegram Clone
-// This can be deployed separately on Railway, Render, or any Node.js hosting
 
 import { Server } from 'socket.io';
 import { createServer } from 'http';
@@ -30,6 +29,10 @@ const MessageSchema = new Schema({
     duration: Number,
     playedBy: [String],
   },
+  // ==========================================
+  // 💡 التعديل: إضافة حقل fileData للصور والمستندات
+  fileData: Schema.Types.Mixed, 
+  // ==========================================
   createdAt: { type: Date, default: Date.now },
   tempId: String,
   status: String,
@@ -103,7 +106,10 @@ io.on('connection', (socket) => {
 
   socket.on('newMessage', async (data, callback) => {
     try {
-      const { roomID, sender, message, replayData, voiceData = null, tempId } = data;
+      // ==========================================
+      // 💡 التعديل: استقبال حقل fileData من العميل
+      const { roomID, sender, message, replayData, voiceData = null, tempId, fileData = null } = data;
+      // ==========================================
       
       const msgData = {
         sender,
@@ -111,6 +117,10 @@ io.on('connection', (socket) => {
         roomID,
         seen: [],
         voiceData,
+        // ==========================================
+        // 💡 التعديل: تخزين حقل fileData في قاعدة البيانات
+        fileData, 
+        // ==========================================
         createdAt: Date.now(),
         tempId,
         status: 'sent',
@@ -134,6 +144,10 @@ io.on('connection', (socket) => {
         const populatedMsg = await Message.findById(newMsg._id)
           .populate('sender', 'name username avatar _id')
           .lean();
+        
+        // ==========================================
+        // ملاحظة: الآن populatedMsg سيحتوي على fileData، وسيتم نشره بشكل صحيح
+        // ==========================================
 
         socket.to(roomID).emit('newMessage', {
           ...populatedMsg,
