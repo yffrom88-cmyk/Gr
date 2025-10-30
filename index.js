@@ -12,8 +12,11 @@ const { Schema, model } = mongoose;
 
 const UserSchema = new Schema({
   name: String,
+  lastName: String, // 🔥 إضافة lastName
   username: String,
-  avatar: String,
+  avatar: String, // 🔥 هذا الحقل يجب أن يكون موجوداً
+  biography: String, // 🔥 إضافة السيرة الذاتية
+  phone: String, // 🔥 إضافة رقم الهاتف
   password: String,
   rooms: [{ type: Schema.Types.ObjectId, ref: 'Room' }],
   roomMessageTrack: [{ roomId: String, scrollPos: Number }],
@@ -29,10 +32,7 @@ const MessageSchema = new Schema({
     duration: Number,
     playedBy: [String],
   },
-  // ==========================================
-  // 💡 التعديل: إضافة حقل fileData للصور والمستندات
   fileData: Schema.Types.Mixed, 
-  // ==========================================
   createdAt: { type: Date, default: Date.now },
   tempId: String,
   status: String,
@@ -104,12 +104,129 @@ await connectDB();
 io.on('connection', (socket) => {
   console.log('✅ Client connected:', socket.id);
 
+  // ==========================================
+  // 🔥 إضافة معالج تحديث بيانات المستخدم (الصورة الشخصية)
+  // ==========================================
+  socket.on('updateUserData', async (data) => {
+    try {
+      const { userID, avatar, name, lastName, biography, username } = data;
+      
+      console.log('📝 Updating user data:', { userID, avatar, name, lastName, biography, username });
+
+      if (!userID) {
+        socket.emit('updateUserData', { 
+          success: false, 
+          error: 'User ID is required' 
+        });
+        return;
+      }
+
+      // إنشاء كائن التحديثات فقط للحقول المرسلة
+      const updateFields = {};
+      if (avatar !== undefined) updateFields.avatar = avatar;
+      if (name !== undefined) updateFields.name = name;
+      if (lastName !== undefined) updateFields.lastName = lastName;
+      if (biography !== undefined) updateFields.biography = biography;
+      if (username !== undefined) updateFields.username = username;
+
+      // تحديث بيانات المستخدم في قاعدة البيانات
+      const updatedUser = await User.findByIdAndUpdate(
+        userID,
+        { $set: updateFields },
+        { new: true, runValidators: true }
+      ).select('name lastName username avatar biography phone _id');
+
+      if (!updatedUser) {
+        socket.emit('updateUserData', { 
+          success: false, 
+          error: 'User not found' 
+        });
+        return;
+      }
+
+      console.log('✅ User updated successfully:', updatedUser);
+
+      // إرسال تأكيد النجاح للعميل الذي أرسل الطلب
+      socket.emit('updateUserData', { 
+        success: true,
+        user: updatedUser
+      });
+
+      // 🔥 إرسال التحديث لجميع الاتصالات النشطة للمستخدم
+      const userSockets = onlineUsers.filter(u => u.userID === userID.toString());
+      userSockets.forEach(({ socketID }) => {
+        io.to(socketID).emit('userDataUpdated', {
+          avatar: updatedUser.avatar,
+          name: updatedUser.name,
+          lastName: updatedUser.lastName,
+          biography: updatedUser.biography,
+          username: updatedUser.username,
+        });
+      });
+
+      // 🔥 تحديث الرسائل والغرف التي تحتوي على هذا المستخدم
+      // (لتحديث الصورة في المحادثات)
+      if (avatar !== undefined) {
+        // تحديث صورة المستخدم في جميع الغرف الخاصة
+        const userRooms = await Room.find({
+          participants: userID,
+          type: 'private'
+        }).select('_id participants');
+
+        userRooms.forEach(room => {
+          io.to(room._id.toString()).emit('participantAvatarUpdate', {
+            userID,
+            avatar: updatedUser.avatar,
+            name: updatedUser.name,
+            lastName: updatedUser.lastName,
+          });
+        });
+      }
+
+    } catch (updateError) {
+      console.error('❌ Error updating user data:', updateError);
+      socket.emit('updateUserData', { 
+        success: false, 
+        error: updateError.message || 'Failed to update user data' 
+      });
+    }
+  });
+
+  // ==========================================
+  // 🔥 إضافة معالج لجلب بيانات المستخدم
+  // ==========================================
+  socket.on('getUserData', async (userID) => {
+    try {
+      console.log('📥 Fetching user data for:', userID);
+
+      const user = await User.findById(userID)
+        .select('name lastName username avatar biography phone _id');
+
+      if (!user) {
+        socket.emit('getUserData', { 
+          success: false, 
+          error: 'User not found' 
+        });
+        return;
+      }
+
+      socket.emit('getUserData', { 
+        success: true,
+        user: user
+      });
+
+    } catch (fetchError) {
+      console.error('❌ Error fetching user data:', fetchError);
+      socket.emit('getUserData', { 
+        success: false, 
+        error: 'Failed to fetch user data' 
+      });
+    }
+  });
+
   socket.on('newMessage', async (data, callback) => {
     try {
-      // ==========================================
-      // 💡 التعديل: استقبال حقل fileData من العميل
       const { roomID, sender, message, replayData, voiceData = null, tempId, fileData = null } = data;
-      // ==========================================
       
       const msgData = {
         sender,
@@ -117,10 +234,7 @@ io.on('connection', (socket) => {
         roomID,
         seen: [],
         voiceData,
-        // ==========================================
-        // 💡 التعديل: تخزين حقل fileData في قاعدة البيانات
         fileData, 
-        // ==========================================
         createdAt: Date.now(),
         tempId,
         status: 'sent',
@@ -142,12 +256,8 @@ io.on('connection', (socket) => {
       } else {
         newMsg = await Message.create(msgData);
         const populatedMsg = await Message.findById(newMsg._id)
-          .populate('sender', 'name username avatar _id')
+          .populate('sender', 'name lastName username avatar _id')
           .lean();
-        
-        // ==========================================
-        // ملاحظة: الآن populatedMsg سيحتوي على fileData، وسيتم نشره بشكل صحيح
-        // ==========================================
 
         socket.to(roomID).emit('newMessage', {
           ...populatedMsg,
@@ -172,8 +282,8 @@ io.on('connection', (socket) => {
 
         if (callback) callback({ success: true, _id: newMsg._id });
       }
-    } catch (error) {
-      console.error('Error in newMessage:', error);
+    } catch (messageError) {
+      console.error('❌ Error in newMessage:', messageError);
       if (callback) callback({ success: false, error: 'Failed to send message' });
     }
   });
@@ -208,6 +318,7 @@ io.on('connection', (socket) => {
         const promises = userRooms.map(async (room) => {
           const lastMsgData = room?.messages?.length
             ? await Message.findOne({ _id: room.messages.at(-1)?._id })
+                .populate('sender', 'name lastName username avatar _id') // 🔥 تحميل بيانات المرسل
             : null;
 
           const notSeenCount = await Message.find({
@@ -230,8 +341,8 @@ io.on('connection', (socket) => {
 
       const rooms = await getRoomsData();
       socket.emit('getRooms', rooms);
-    } catch (error) {
-      console.error('Error in getRooms:', error);
+    } catch (roomsError) {
+      console.error('❌ Error in getRooms:', roomsError);
     }
   });
 
@@ -243,7 +354,11 @@ io.on('connection', (socket) => {
         .populate('messages')
         .populate({
           path: 'messages',
-          populate: { path: 'sender', model: User },
+          populate: { 
+            path: 'sender', 
+            model: User,
+            select: 'name lastName username avatar _id' // 🔥 تحديد الحقول المطلوبة
+          },
         });
 
       if (roomData && roomData?.type === 'private') {
@@ -255,8 +370,8 @@ io.on('connection', (socket) => {
       }
 
       socket.emit('joining', roomData);
-    } catch (error) {
-      console.error('Error in joining:', error);
+    } catch (joiningError) {
+      console.error('❌ Error in joining:', joiningError);
     }
   });
 
@@ -302,8 +417,8 @@ io.on('connection', (socket) => {
 
         io.to(newRoom._id.toString()).emit('createRoom', newRoom);
       }
-    } catch (error) {
-      console.error('Error in createRoom:', error);
+    } catch (createRoomError) {
+      console.error('❌ Error in createRoom:', createRoomError);
     }
   });
 
@@ -329,8 +444,8 @@ io.on('connection', (socket) => {
           $set: { readTime: new Date(seenData.readTime) },
         }
       );
-    } catch (error) {
-      console.error('Error in seenMsg:', error);
+    } catch (seenError) {
+      console.error('❌ Error in seenMsg:', seenError);
     }
   });
 
@@ -345,7 +460,9 @@ io.on('connection', (socket) => {
         const lastMsg = await Message.findOne({
           roomID: roomID,
           hideFor: { $nin: [userID] },
-        }).sort({ createdAt: -1 });
+        })
+        .sort({ createdAt: -1 })
+        .populate('sender', 'name lastName username avatar _id'); // 🔥 تحميل بيانات المرسل
 
         if (lastMsg) {
           io.to(roomID).emit('updateLastMsgData', { msgData: lastMsg, roomID });
@@ -353,8 +470,8 @@ io.on('connection', (socket) => {
 
         await Room.findOneAndUpdate({ _id: roomID }, { $pull: { messages: msgID } });
       }
-    } catch (error) {
-      console.error('Error in deleteMsg:', error);
+    } catch (deleteError) {
+      console.error('❌ Error in deleteMsg:', deleteError);
     }
   });
 
@@ -364,11 +481,16 @@ io.on('connection', (socket) => {
       const updatedMsgData = await Message.findOneAndUpdate(
         { _id: msgID },
         { message: editedMsg, isEdited: true }
-      ).lean();
+      )
+      .lean()
+      .populate('sender', 'name lastName username avatar _id'); // 🔥 تحميل بيانات المرسل
 
       if (!updatedMsgData) return;
 
-      const lastMsg = await Message.findOne({ roomID }).sort({ createdAt: -1 }).lean();
+      const lastMsg = await Message.findOne({ roomID })
+        .sort({ createdAt: -1 })
+        .lean()
+        .populate('sender', 'name lastName username avatar _id'); // 🔥 تحميل بيانات المرسل
 
       if (lastMsg && lastMsg._id.toString() === msgID) {
         io.to(roomID).emit('updateLastMsgData', {
@@ -376,8 +498,8 @@ io.on('connection', (socket) => {
           msgData: { ...updatedMsgData, message: editedMsg },
         });
       }
-    } catch (error) {
-      console.error('Error in editMessage:', error);
+    } catch (editError) {
+      console.error('❌ Error in editMessage:', editError);
     }
   });
 
@@ -396,9 +518,9 @@ io.on('connection', (socket) => {
       }
 
       io.to(updatedFields.roomID).emit('updateRoomData', updatedRoom);
-    } catch (error) {
-      console.error('Error updating room:', error);
-      socket.emit('updateRoomDataError', { message: error.message });
+    } catch (updateRoomError) {
+      console.error('❌ Error updating room:', updateRoomError);
+      socket.emit('updateRoomDataError', { message: updateRoomError.message });
     }
   });
 
